@@ -29,6 +29,7 @@ type moqHandler struct {
 	subscribe     bool
 	nextSessionID atomic.Uint64
 	publishers    map[moqtransport.Publisher]struct{}
+	sessions      map[*moqtransport.Session]struct{}
 	lock          sync.Mutex
 	largestGroup  atomic.Uint64
 }
@@ -168,12 +169,21 @@ func (h *moqHandler) handle(conn moqtransport.Connection) error {
 		SubscribeUpdateHandler: h.getSubscribeUpdateHandler(id),
 		InitialMaxRequestID:    100,
 	}
+	h.lock.Lock()
+	h.sessions[session] = struct{}{}
+	h.lock.Unlock()
+
+	log.Printf("[+] New session registered (ID: %d)", id)
+
 	if err := session.Run(conn); err != nil {
+		h.lock.Lock()
+		delete(h.sessions, session)
+		h.lock.Unlock()
 		return err
 	}
 	if h.publish {
 		if err := session.Announce(context.Background(), h.namespace); err != nil {
-			log.Printf("faild to announce namespace '%v': %v", h.namespace, err)
+			log.Printf("[-] Failed to announce namespace '%v': %v", h.namespace, err)
 		}
 	}
 	if h.subscribe {
@@ -350,4 +360,17 @@ func tupleEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func (h *moqHandler) BroadcastGoAway(newURI string) {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+
+	log.Printf("[+] Sending GOAWAY (NewSessionURI: %s) to %d connected clients...", newURI, len(h.sessions))
+
+	for s := range h.sessions {
+		if err := s.SendGoAway(newURI); err != nil {
+			log.Printf("[-] Failed to send GOAWAY to a session: %v", err)
+		}
+	}
 }

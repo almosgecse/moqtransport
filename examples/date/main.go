@@ -111,6 +111,7 @@ func runServer(ctx context.Context, opts *options) error {
 		publish:    opts.publish,
 		subscribe:  opts.subscribe,
 		publishers: make(map[moqtransport.Publisher]struct{}),
+		sessions:   make(map[*moqtransport.Session]struct{}),
 	}
 
 	errChan := make(chan error, 1)
@@ -127,7 +128,7 @@ func runServer(ctx context.Context, opts *options) error {
 		fmt.Println("\n=======================================================")
 		fmt.Println("[!] SIGTERM signal received from OS!")
 		fmt.Println("[!] Initiating Graceful Switchover (5s timeout)...")
-		fmt.Println("[+] Broadcasting GOAWAY messages to connected clients...")
+		h.BroadcastGoAway("moq://new-relay.local:8080")
 		time.Sleep(5 * time.Second)
 		fmt.Println("[+] Grace period expired. Server shutting down safely.")
 		fmt.Println("=======================================================")
@@ -146,6 +147,7 @@ func runClient(ctx context.Context, opts *options) error {
 		publish:    opts.publish,
 		subscribe:  opts.subscribe,
 		publishers: make(map[moqtransport.Publisher]struct{}),
+		sessions:   make(map[*moqtransport.Session]struct{}),
 	}
 	return h.runClient(ctx, opts.webtransport)
 }

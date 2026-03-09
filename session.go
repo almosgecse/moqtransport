@@ -1501,3 +1501,11 @@ func boolToUint8(b bool) uint8 {
 	}
 	return 0
 }
+
+func (s *Session) SendGoAway(newSessionURI string) error {
+	// A controlStream.write megkapja a wire.GoAwayMessage struktúrát,
+	// és automatikusan lefordítja a megfelelő QUIC bájtokká!
+	return s.controlStream.write(&wire.GoAwayMessage{
+		NewSessionURI: newSessionURI,
+	})
+}
