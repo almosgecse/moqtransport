@@ -3,10 +3,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,7 +184,7 @@ func (h *moqHandler) handle(conn moqtransport.Connection) error {
 	return nil
 }
 
-func (h *moqHandler) subscribeAndRead(s *moqtransport.Session, namespace []string, trackname string) error {
+/*func (h *moqHandler) subscribeAndRead(s *moqtransport.Session, namespace []string, trackname string) error {
 	rs, err := s.Subscribe(context.Background(), namespace, trackname)
 	if err != nil {
 		return err
@@ -204,9 +203,45 @@ func (h *moqHandler) subscribeAndRead(s *moqtransport.Session, namespace []strin
 		}
 	}()
 	return nil
+}*/
+
+func (h *moqHandler) subscribeAndRead(s *moqtransport.Session, namespace []string, trackname string) error {
+	rs, err := s.Subscribe(context.Background(), namespace, trackname)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		outFile, err := os.Create("letoltott_video.mp4")
+		if err != nil {
+			log.Printf("Hiba a kimeneti fájl létrehozásakor: %v", err)
+			return
+		}
+		defer outFile.Close()
+
+		log.Println("Videó fogadásának megkezdése...")
+
+		for {
+			o, err := rs.ReadObject(context.Background())
+			if err != nil {
+				log.Printf("A letöltés befejeződött (Szerver lezárta a streamet): %v", err)
+				log.Println("Fájl mentve. Kliens leállítása...")
+				os.Exit(0)
+			}
+
+			if _, err := outFile.Write(o.Payload); err != nil {
+				log.Printf("Hiba a fájlba íráskor: %v", err)
+				return
+			}
+
+			log.Printf("Megérkezett egy %v bájtos videó darab (ObjID: %v, GrpID: %v)", len(o.Payload), o.ObjectID, o.GroupID)
+		}
+	}()
+
+	return nil
 }
 
-func (h *moqHandler) setupDateTrack() {
+/*func (h *moqHandler) setupDateTrack() {
 	ticker := time.NewTicker(time.Second)
 	groupID := 0
 	for ts := range ticker.C {
@@ -235,6 +270,73 @@ func (h *moqHandler) setupDateTrack() {
 		h.lock.Unlock()
 		h.largestGroup.Store(uint64(groupID))
 		groupID++
+	}
+}*/
+
+func (h *moqHandler) setupDateTrack() {
+	file, err := os.Open("video.mp4")
+	if err != nil {
+		log.Fatalf("Nem sikerült megnyitni a videót: %v", err)
+	}
+	defer file.Close()
+
+	log.Println("Szerver fut, várakozás a kliens csatlakozására...")
+
+	for {
+		h.lock.Lock()
+		pubCount := len(h.publishers)
+		h.lock.Unlock()
+
+		if pubCount > 0 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	log.Println("Kliens csatlakozott! Videó küldésének megkezdése...")
+
+	buf := make([]byte, 64*1024)
+	groupID := 0
+
+	for {
+		n, err := file.Read(buf)
+		if err != nil {
+			if err.Error() == "EOF" {
+				log.Println("A videó küldése sikeresen befejeződött!")
+				h.lock.Lock()
+				for p := range h.publishers {
+					p.CloseWithError(0, "End of Video")
+				}
+				h.lock.Unlock()
+			} else {
+				log.Printf("Hiba olvasás közben: %v", err)
+			}
+			break
+		}
+
+		chunk := buf[:n]
+
+		h.lock.Lock()
+		for p := range h.publishers {
+			sg, err := p.OpenSubgroup(uint64(groupID), 0, 0)
+			if err != nil {
+				log.Printf("failed to open new subgroup: %v", err)
+				p.CloseWithError(uint64(moqtransport.ErrorCodeSubscribeDoneSubscriptionEnded), "")
+				delete(h.publishers, p)
+				continue
+			}
+
+			if _, err := sg.WriteObject(0, chunk); err != nil {
+				log.Printf("failed to write video chunk to subgroup: %v", err)
+			}
+			sg.Close()
+		}
+		h.lock.Unlock()
+
+		h.largestGroup.Store(uint64(groupID))
+		groupID++
+
+		time.Sleep(30 * time.Millisecond)
 	}
 }
 
