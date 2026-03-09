@@ -212,29 +212,29 @@ func (h *moqHandler) subscribeAndRead(s *moqtransport.Session, namespace []strin
 	}
 
 	go func() {
-		outFile, err := os.Create("letoltott_video.mp4")
+		outFile, err := os.Create("downloaded_video.mp4")
 		if err != nil {
-			log.Printf("Hiba a kimeneti fájl létrehozásakor: %v", err)
+			log.Printf("Error creating output file: %v", err)
 			return
 		}
 		defer outFile.Close()
 
-		log.Println("Videó fogadásának megkezdése...")
+		log.Println("Starting video reception...")
 
 		for {
 			o, err := rs.ReadObject(context.Background())
 			if err != nil {
-				log.Printf("A letöltés befejeződött (Szerver lezárta a streamet): %v", err)
-				log.Println("Fájl mentve. Kliens leállítása...")
+				log.Printf("The download has been completed (Server closed the stream): %v", err)
+				log.Println("File saved. Shutting down client...")
 				os.Exit(0)
 			}
 
 			if _, err := outFile.Write(o.Payload); err != nil {
-				log.Printf("Hiba a fájlba íráskor: %v", err)
+				log.Printf("Error writing to output file: %v", err)
 				return
 			}
 
-			log.Printf("Megérkezett egy %v bájtos videó darab (ObjID: %v, GrpID: %v)", len(o.Payload), o.ObjectID, o.GroupID)
+			log.Printf("Received a %v-byte video chunk (ObjID: %v, GrpID: %v)", len(o.Payload), o.ObjectID, o.GroupID)
 		}
 	}()
 
@@ -276,11 +276,11 @@ func (h *moqHandler) subscribeAndRead(s *moqtransport.Session, namespace []strin
 func (h *moqHandler) setupDateTrack() {
 	file, err := os.Open("video.mp4")
 	if err != nil {
-		log.Fatalf("Nem sikerült megnyitni a videót: %v", err)
+		log.Fatalf("Failed to open video file: %v", err)
 	}
 	defer file.Close()
 
-	log.Println("Szerver fut, várakozás a kliens csatlakozására...")
+	log.Println("Server running, waiting for client connection...")
 
 	for {
 		h.lock.Lock()
@@ -293,7 +293,7 @@ func (h *moqHandler) setupDateTrack() {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	log.Println("Kliens csatlakozott! Videó küldésének megkezdése...")
+	log.Println("Client connected! Starting video transmission...")
 
 	buf := make([]byte, 64*1024)
 	groupID := 0
@@ -302,14 +302,14 @@ func (h *moqHandler) setupDateTrack() {
 		n, err := file.Read(buf)
 		if err != nil {
 			if err.Error() == "EOF" {
-				log.Println("A videó küldése sikeresen befejeződött!")
+				log.Println("The video transmission has been completed successfully!")
 				h.lock.Lock()
 				for p := range h.publishers {
 					p.CloseWithError(0, "End of Video")
 				}
 				h.lock.Unlock()
 			} else {
-				log.Printf("Hiba olvasás közben: %v", err)
+				log.Printf("Error reading video file: %v", err)
 			}
 			break
 		}
