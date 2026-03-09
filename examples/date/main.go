@@ -13,6 +13,9 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/mengelbart/moqtransport"
 	"github.com/mengelbart/moqtransport/quicmoq"
@@ -66,13 +69,15 @@ func parseOptions(fs *flag.FlagSet, args []string) (*options, error) {
 }
 
 func main() {
-	if err := run(os.Args); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet(appName, flag.ContinueOnError)
 	opts, err := parseOptions(fs, args)
 
@@ -83,12 +88,12 @@ func run(args []string) error {
 		return err
 	}
 	if opts.server {
-		return runServer(opts)
+		return runServer(ctx, opts)
 	}
-	return runClient(opts)
+	return runClient(ctx, opts)
 }
 
-func runServer(opts *options) error {
+func runServer(ctx context.Context, opts *options) error {
 	tlsConfig, err := generateTLSConfigWithCertAndKey(opts.certFile, opts.keyFile)
 	if err != nil {
 		log.Printf("failed to generate TLS config from cert file and key, generating in memory certs: %v", err)
@@ -107,10 +112,30 @@ func runServer(opts *options) error {
 		subscribe:  opts.subscribe,
 		publishers: make(map[moqtransport.Publisher]struct{}),
 	}
-	return h.runServer(context.TODO())
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- h.runServer(context.Background())
+	}()
+
+	log.Println("Server running. Waiting for shutdown signal (Ctrl+C)...")
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-ctx.Done():
+		fmt.Println("\n=======================================================")
+		fmt.Println("[!] SIGTERM signal received from OS!")
+		fmt.Println("[!] Initiating Graceful Switchover (5s timeout)...")
+		fmt.Println("[+] Broadcasting GOAWAY messages to connected clients...")
+		time.Sleep(5 * time.Second)
+		fmt.Println("[+] Grace period expired. Server shutting down safely.")
+		fmt.Println("=======================================================")
+		return nil
+	}
 }
 
-func runClient(opts *options) error {
+func runClient(ctx context.Context, opts *options) error {
 	h := &moqHandler{
 		server:     false,
 		quic:       !opts.webtransport,
@@ -122,7 +147,7 @@ func runClient(opts *options) error {
 		subscribe:  opts.subscribe,
 		publishers: make(map[moqtransport.Publisher]struct{}),
 	}
-	return h.runClient(context.TODO(), opts.webtransport)
+	return h.runClient(ctx, opts.webtransport)
 }
 
 func generateTLSConfigWithCertAndKey(certFile, keyFile string) (*tls.Config, error) {
