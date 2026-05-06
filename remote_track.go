@@ -48,6 +48,7 @@ type RemoteTrack struct {
 
 	subGroupCount atomic.Uint64
 	fetchCount    atomic.Uint64 // should never grow larger than one for now.
+	migrating     atomic.Bool
 
 	responseChan chan error
 }
@@ -178,6 +179,9 @@ func (t *RemoteTrack) readStream(parser objectMessageParser) error {
 }
 
 func (t *RemoteTrack) done(status uint64, reason string) {
+	if t.migrating.Load() {
+		return
+	}
 	t.doneCtxCancel(&ErrSubscribeDone{
 		Status: status,
 		Reason: reason,

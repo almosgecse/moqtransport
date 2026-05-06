@@ -1077,6 +1077,70 @@ func (s *Session) HandshakeDone() <-chan struct{} {
 	return s.handshakeDoneCh
 }
 
+// Migrate transfers all established subscriptions from this session to
+// newSession. For each subscription, it re-subscribes on the new session and
+// pipes incoming data into the original RemoteTrack's buffer so that the
+// application's ReadObject loop continues seamlessly.
+//
+// The caller must establish the new connection and call Run on newSession
+// before calling Migrate. Migrate returns the number of subscriptions being
+// migrated. Per-track migration errors are logged but not returned.
+func (s *Session) Migrate(newSession *Session) (int, error) {
+	if s.ctx == nil {
+		return 0, errors.New("old session not started")
+	}
+	if newSession == nil {
+		return 0, errors.New("new session must not be nil")
+	}
+	newHandshake := newSession.HandshakeDone()
+	if newHandshake == nil {
+		return 0, errors.New("new session has not been started (Run not called)")
+	}
+	select {
+	case <-s.ctx.Done():
+		return 0, context.Cause(s.ctx)
+	case <-newHandshake:
+	}
+	tracks := s.remoteTracks.openTracks()
+	if len(tracks) == 0 {
+		return 0, nil
+	}
+	s.logger.Info("migrating subscriptions", "count", len(tracks))
+	for _, rt := range tracks {
+		go s.migrateTrack(rt, newSession)
+	}
+	return len(tracks), nil
+}
+
+func (s *Session) migrateTrack(rt *RemoteTrack, newSession *Session) {
+	s.logger.Info("migrating track", "namespace", rt.namespace, "track", rt.trackname)
+
+	// Prevent SUBSCRIBE_DONE from the old relay from cancelling the track.
+	rt.migrating.Store(true)
+
+	// Use context.Background: the old session's ctx will be cancelled when the
+	// old relay closes the connection, but the pipe must outlive it.
+	newRt, err := newSession.Subscribe(context.Background(), rt.namespace, rt.trackname)
+	if err != nil {
+		s.logger.Error("failed to migrate track", "error", err,
+			"namespace", rt.namespace, "track", rt.trackname)
+		rt.migrating.Store(false)
+		return
+	}
+	if err := s.unsubscribe(rt.requestID); err != nil {
+		s.logger.Info("unsubscribe from old relay failed", "error", err)
+	}
+	for {
+		obj, err := newRt.ReadObject(context.Background())
+		if err != nil {
+			s.logger.Info("migration pipe ended", "error", err,
+				"namespace", rt.namespace, "track", rt.trackname)
+			return
+		}
+		rt.push(obj)
+	}
+}
+
 func (s *Session) onMaxRequestID(msg *wire.MaxRequestIDMessage) error {
 	return s.requestIDs.setMax(msg.RequestID)
 }
