@@ -494,7 +494,7 @@ func (s *Session) Subscribe(
 	if err != nil {
 		return nil, err
 	}
-	rt := newRemoteTrack(requestID, func() error {
+	rt := newRemoteTrack(requestID, namespace, name, func() error {
 		return s.unsubscribe(requestID)
 	}, func(ctx context.Context, options ...SubscribeUpdateOption) error {
 		return s.UpdateSubscription(ctx, requestID, options...)
@@ -668,7 +668,7 @@ func (s *Session) Fetch(
 	if err != nil {
 		return nil, err
 	}
-	rt := newRemoteTrack(requestID, func() error {
+	rt := newRemoteTrack(requestID, namespace, track, func() error {
 		return s.fetchCancel(requestID)
 	}, nil)
 	if err = s.remoteTracks.addPending(requestID, rt); err != nil {
