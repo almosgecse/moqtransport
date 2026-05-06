@@ -87,6 +87,8 @@ type Session struct {
 	localTracks  *localTrackMap
 
 	outgoingTrackStatusRequests *trackStatusRequestMap
+
+	goAwayReceived atomic.Bool
 }
 
 func (s *Session) Run(conn Connection) error {
@@ -489,6 +491,9 @@ func (s *Session) Subscribe(
 	name string,
 	options ...SubscribeOption,
 ) (*RemoteTrack, error) {
+	if s.Draining() {
+		return nil, errSessionDraining
+	}
 
 	requestID, err := s.getRequestID()
 	if err != nil {
@@ -664,6 +669,9 @@ func (s *Session) Fetch(
 	namespace []string,
 	track string,
 ) (*RemoteTrack, error) {
+	if s.Draining() {
+		return nil, errSessionDraining
+	}
 	requestID, err := s.getRequestID()
 	if err != nil {
 		return nil, err
@@ -797,6 +805,9 @@ func (s *Session) sendTrackStatus(ts TrackStatus) error {
 // peer was received or ctx is cancelled and returns an error if the
 // announcement was rejected.
 func (s *Session) Announce(ctx context.Context, namespace []string) error {
+	if s.Draining() {
+		return errSessionDraining
+	}
 	requestID, err := s.getRequestID()
 	if err != nil {
 		return err
@@ -870,6 +881,9 @@ func (s *Session) AnnounceCancel(ctx context.Context, namespace []string, errorC
 // SubscribeAnnouncements subscribes to announcements of namespaces with prefix.
 // It blocks until a response from the peer is received or ctx is cancelled.
 func (s *Session) SubscribeAnnouncements(ctx context.Context, prefix []string) error {
+	if s.Draining() {
+		return errSessionDraining
+	}
 	requestID, err := s.getRequestID()
 	if err != nil {
 		return err
@@ -937,7 +951,7 @@ func (s *Session) receive(msg wire.ControlMessage) error {
 	var err error
 	switch m := msg.(type) {
 	case *wire.GoAwayMessage:
-		s.onGoAway(m)
+		err = s.onGoAway(m)
 	case *wire.MaxRequestIDMessage:
 		err = s.onMaxRequestID(m)
 	case *wire.RequestsBlockedMessage:
@@ -1054,11 +1068,26 @@ func (s *Session) onServerSetup(m *wire.ServerSetupMessage) (err error) {
 	return nil
 }
 
-func (s *Session) onGoAway(msg *wire.GoAwayMessage) {
+func (s *Session) onGoAway(msg *wire.GoAwayMessage) error {
+	if s.goAwayReceived.Swap(true) {
+		return errMultipleGoAways
+	}
+	if len(msg.NewSessionURI) > 8192 {
+		return errGoAwayURITooLong
+	}
+	if s.conn.Perspective() == PerspectiveServer && len(msg.NewSessionURI) > 0 {
+		return errGoAwayWithURIOnServer
+	}
 	s.Handler.Handle(nil, &Message{
 		Method:        MessageGoAway,
 		NewSessionURI: msg.NewSessionURI,
 	})
+	return nil
+}
+
+// Draining returns true if a GOAWAY message has been received from the peer.
+func (s *Session) Draining() bool {
+	return s.goAwayReceived.Load()
 }
 
 // GoAway sends a GOAWAY message to the peer with the given new session URI.
@@ -1115,11 +1144,8 @@ func (s *Session) Migrate(newSession *Session) (int, error) {
 func (s *Session) migrateTrack(rt *RemoteTrack, newSession *Session) {
 	s.logger.Info("migrating track", "namespace", rt.namespace, "track", rt.trackname)
 
-	// Prevent SUBSCRIBE_DONE from the old relay from cancelling the track.
 	rt.migrating.Store(true)
 
-	// Use context.Background: the old session's ctx will be cancelled when the
-	// old relay closes the connection, but the pipe must outlive it.
 	newRt, err := newSession.Subscribe(context.Background(), rt.namespace, rt.trackname)
 	if err != nil {
 		s.logger.Error("failed to migrate track", "error", err,
@@ -1131,7 +1157,7 @@ func (s *Session) migrateTrack(rt *RemoteTrack, newSession *Session) {
 		s.logger.Info("unsubscribe from old relay failed", "error", err)
 	}
 	for {
-		obj, err := newRt.ReadObject(context.Background())
+		obj, err := newRt.ReadObject(newSession.ctx)
 		if err != nil {
 			s.logger.Info("migration pipe ended", "error", err,
 				"namespace", rt.namespace, "track", rt.trackname)
