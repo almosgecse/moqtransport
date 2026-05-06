@@ -1061,6 +1061,22 @@ func (s *Session) onGoAway(msg *wire.GoAwayMessage) {
 	})
 }
 
+// GoAway sends a GOAWAY message to the peer with the given new session URI.
+func (s *Session) GoAway(uri string) error {
+	if !s.handshakeDone.Load() {
+		return errors.New("session handshake not completed")
+	}
+	return s.controlStream.write(&wire.GoAwayMessage{
+		NewSessionURI: uri,
+	})
+}
+
+// HandshakeDone returns a channel that is closed when the MoQ handshake
+// has completed successfully. Returns nil if Run has not been called yet.
+func (s *Session) HandshakeDone() <-chan struct{} {
+	return s.handshakeDoneCh
+}
+
 func (s *Session) onMaxRequestID(msg *wire.MaxRequestIDMessage) error {
 	return s.requestIDs.setMax(msg.RequestID)
 }
